@@ -1061,18 +1061,87 @@ func.func @reshape_empty(%arg0: tensor<7x0xf64>) -> tensor<0x42x101xf64> {
 
 // -----
 
-// CHECK-DAG: #[[OPERAND_MAP:.*]] = affine_map<(d0, d1) -> (d0, -d1 + 2)>
-// CHECK-DAG: #[[RESULT_MAP:.*]]  = affine_map<(d0, d1) -> (d0, d1)>
-// CHECK: func @reverse
-func.func @reverse(%input: tensor<2x3xf32>) -> tensor<2x3xf32> {
-  %result = "stablehlo.reverse"(%input) {
-    dimensions = array<i64: 1>, someattr
-  } : (tensor<2x3xf32>) -> tensor<2x3xf32>
-  func.return %result : tensor<2x3xf32>
+// CHECK-LABEL: func.func @reverse_dim1
+// CHECK-SAME:   %[[IN:[a-zA-Z0-9]+]]
+func.func @reverse_dim1(%arg0: tensor<3x5xi32>) -> tensor<3x5xi32> {
+  %0 = "stablehlo.reverse"(%arg0) {
+    dimensions = array<i64: 1>
+  } : (tensor<3x5xi32>) -> tensor<3x5xi32>
+  return %0 : tensor<3x5xi32>
 }
-// CHECK: linalg.generic
-// CHECK-SAME: indexing_maps = [#[[OPERAND_MAP]], #[[RESULT_MAP]]]
-// CHECK-SAME: {someattr}
+// CHECK:        %[[INIT:.+]] = tensor.empty() : tensor<3x5xi32>
+// CHECK:        %[[GENERIC:.+]] = linalg.generic
+// CHECK-SAME:    indexing_maps = [#map]
+// CHECK-SAME:    iterator_types = ["parallel", "parallel"]
+// CHECK-SAME:    outs(%[[INIT]] : tensor<3x5xi32) {
+// CHECK:           ^bb0(%[[A:.+]]: i32):
+// CHECK:        %[[IDX0:.+]] = linalg.index 0 : index
+// CHECK:        %[[IDX1:.+]] = linalg.index 1 : index
+// CHECK:        %[[C4:.+]] = arith.constant 4 : index
+// CHECK:        %[[SUB:.+]] = arith.subi %[[C4]], %[[IDX1]] : index
+// CHECK:        %[[EXTRACT:.+]] = tensor.extract %0[%[[SUB]], %[[IDX0]]] : tensor<3x5xi32>
+// CHECK:         linalg.yield %[[EXTRACT]] : i32
+// CHECK:        } -> tensor<3x5xi32>
+// CHECK:        return %[[GENERIC]]
+
+// -----
+
+// CHECK-LABEL: func.func @reverse_unsigned
+// CHECK-SAME:   %[[IN:[a-zA-Z0-9]+]]
+func.func @reverse_unsigned(%arg0: tensor<3x5xui32>) -> tensor<3x5xui32> {
+  %0 = "stablehlo.reverse"(%arg0) {
+    dimensions = array<i64: 1>
+  } : (tensor<3x5xui32>) -> tensor<3x5xui32>
+  return %0 : tensor<3x5xui32>
+}
+// CHECK:        %[[BITCAST:.+]] = builtin.unrealized_conversion_cast %[[IN]] : tensor<3x5xui32> to tensor<3x5xi32>
+// CHECK:        %[[INIT:.+]] = tensor.empty() : tensor<3x5xi32>
+// CHECK:        %[[GENERIC:.+]] = linalg.generic
+// CHECK-SAME:    indexing_maps = [#map]
+// CHECK-SAME:    iterator_types = ["parallel", "parallel"]
+// CHECK-SAME:    outs(%[[INIT]] : tensor<3x5xi32) {
+// CHECK:           ^bb0(%[[A:.+]]: i32):
+// CHECK:        %[[IDX0:.+]] = linalg.index 0 : index
+// CHECK:        %[[IDX1:.+]] = linalg.index 1 : index
+// CHECK:        %[[C4:.+]] = arith.constant 4 : index
+// CHECK:        %[[SUB:.+]] = arith.subi %[[C4]], %[[IDX1]] : index
+// CHECK:        %[[EXTRACT:.+]] = tensor.extract %0[%[[IDX0]], %[[SUB]]] : tensor<3x5xi32>
+// CHECK:         linalg.yield %[[EXTRACT]] : i32
+// CHECK:        } -> tensor<3x5xi32>
+// CHECK:        %[[BITCAST:.+]] = builtin.unrealized_conversion_cast %[[GENERIC]] : tensor<3x5xi32> to tensor<3x5xui32>
+// CHECK:        return %[[BITCAST]]
+
+// -----
+
+// CHECK-LABEL: func.func @reverse_multi_dim
+// CHECK-SAME:   %[[IN:[a-zA-Z0-9]+]]
+func.func @reverse_multi_dim(%arg0: tensor<?x?xi32>) -> tensor<?x?xi32> {
+  %0 = "stablehlo.reverse"(%arg0) {
+    dimensions = array<i64: 0, 1>
+  } : (tensor<?x?xi32>) -> tensor<?x?xi32>
+  return %0 : tensor<?x?xi32>
+}
+// CHECK-DAG:    %[[C0:.+]] = arith.constant 0 : index
+// CHECK-DAG:    %[[C1:.+]] = arith.constant 1 : index
+// CHECK-DAG:    %[[D0:.+]] = tensor.dim %[[IN]], %[[C0]]
+// CHECK-DAG:    %[[D1:.+]] = tensor.dim %[[IN]], %[[C1]]
+// CHECK:        %[[INIT:.+]] = tensor.empty(%[[D0]], %[[D1]]) : tensor<?x?xi32>
+// CHECK:        %[[GENERIC:.+]] = linalg.generic
+// CHECK-SAME:    indexing_maps = [#map]
+// CHECK-SAME:    iterator_types = ["parallel", "parallel"]
+// CHECK-SAME:    outs(%[[INIT]] : tensor<3x5xi32) {
+// CHECK:           ^bb0(%[[A:.+]]: i32):
+// CHECK:        %[[C1_1:.+]] = arith.constant 1 : index
+// CHECK:        %[[IDX0:.+]] = linalg.index 0 : index
+// CHECK:        %[[SUB0:.+]] = arith.subi %[[D0]], %[[IDX1]] : index
+// CHECK:        %[[SUB1:.+]] = arith.subi %[[SUB0]], %[[IDX0]] : index
+// CHECK:        %[[IDX1:.+]] = linalg.index 1 : index
+// CHECK:        %[[SUB2:.+]] = arith.subi %[[D1]], %[[C1_1]] : index
+// CHECK:        %[[SUB3:.+]] = arith.subi %[[SUB2]], %[[IDX1]] : index
+// CHECK:        %[[EXTRACT:.+]] = tensor.extract %0[%[[SUB1]], %[[SUB3]]] : tensor<3x5xi32>
+// CHECK:         linalg.yield %[[EXTRACT]] : i32
+// CHECK:        } -> tensor<3x5xi32>
+// CHECK:        return %[[GENERIC]]
 
 // -----
 

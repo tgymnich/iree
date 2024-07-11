@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <optional>
 #include <string>
 
 #include "compiler/plugins/input/StableHLO/Conversion/LegalizeToLinalgUtils.h"
@@ -1432,28 +1433,70 @@ struct ConstConverterTensor final
   }
 };
 
-// TODO(b/156787842): Support the lowering for dynamic shapes.
-struct ReverseConverter final
-    : DataMovementOpConverter<ReverseConverter, mlir::stablehlo::ReverseOp> {
-  using DataMovementOpConverter::DataMovementOpConverter;
+struct ReverseOpConverter final
+    : OpConversionPattern<mlir::stablehlo::ReverseOp> {
+  using OpConversionPattern::OpConversionPattern;
 
-  static SmallVector<AffineMap, 2>
-  getIndexingMaps(mlir::stablehlo::ReverseOp op, Builder *b) {
-    auto resultType = llvm::cast<ShapedType>(getHloOpResultType(op));
-    int64_t nloops = resultType.getRank();
-    SmallVector<AffineExpr, 2> inputExprs;
-    inputExprs.reserve(nloops);
-    for (int64_t i = 0; i < nloops; ++i)
-      inputExprs.push_back(b->getAffineDimExpr(i));
-    for (int i : op.getDimensions()) {
-      if (resultType.isDynamicDim(i))
-        return {};
-      int n = resultType.getShape()[i];
-      inputExprs[i] = b->getAffineConstantExpr(n - 1) - inputExprs[i];
+  LogicalResult
+  matchAndRewrite(mlir::stablehlo::ReverseOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    Value operand = adaptor.getOperand();
+    auto operandTy = cast<ShapedType>(operand.getType());
+    auto dims = adaptor.getDimensions();
+
+    auto resultTy = getTypeConverter()->convertType<ShapedType>(op.getType());
+    if (!resultTy)
+      return rewriter.notifyMatchFailure(op, "type conversion failed");
+
+    SmallVector<Value> dynDims;
+    dynDims.reserve(operandTy.getNumDynamicDims());
+    for (int i = 0; i < operandTy.getRank(); i++) {
+      if (operandTy.isDynamicDim(i)) {
+        dynDims.push_back(rewriter.create<tensor::DimOp>(loc, operand, i));
+      }
     }
-    return {
-        AffineMap::get(nloops, /*symbolCount=*/0, inputExprs, b->getContext()),
-        b->getMultiDimIdentityMap(nloops)};
+
+    Value emptyTensor = rewriter.create<tensor::EmptyOp>(
+        loc, resultTy.getShape(), resultTy.getElementType(), dynDims);
+
+    SmallVector<AffineMap, 2> affineMaps = {
+        rewriter.getMultiDimIdentityMap(resultTy.getRank())};
+
+    rewriter.replaceOpWithNewOp<linalg::GenericOp>(
+        op, resultTy, ArrayRef<Value>({}), ValueRange{emptyTensor}, affineMaps,
+        getNParallelLoopsAttrs(operandTy.getRank()),
+        [&](OpBuilder &b, Location nestedLoc, ValueRange args) {
+          SmallVector<Value> indices;
+          indices.reserve(operandTy.getRank());
+
+          std::optional<Value> one;
+          if (operandTy.getNumDynamicDims()) {
+            one = b.create<arith::ConstantIndexOp>(nestedLoc, 1);
+          }
+
+          for (int64_t i = 0; i < operandTy.getRank(); i++) {
+            Value index = b.create<linalg::IndexOp>(nestedLoc, i);
+            if (llvm::is_contained(dims, i)) {
+              Value dimMinusOne;
+              if (operandTy.isDynamicDim(i)) {
+                Value dim = dynDims[operandTy.getDynamicDimIndex(i)];
+                dimMinusOne = b.create<arith::SubIOp>(nestedLoc, dim, *one);
+              } else {
+                int64_t dim = operandTy.getDimSize(i);
+                dimMinusOne =
+                    b.createOrFold<arith::ConstantIndexOp>(nestedLoc, dim - 1);
+              }
+              index = b.create<arith::SubIOp>(nestedLoc, dimMinusOne, index);
+            }
+
+            indices.push_back(index);
+          }
+          Value extract =
+              b.create<tensor::ExtractOp>(nestedLoc, operand, indices);
+          b.create<linalg::YieldOp>(nestedLoc, extract);
+        });
+    return success();
   }
 };
 
@@ -2625,7 +2668,7 @@ void populateStableHloToLinalgConversionPatterns(MLIRContext *context,
       GatherConversion,
       RealDynamicSliceConverter,
       ReshapeOpConverter,
-      ReverseConverter,
+      ReverseOpConverter,
       SetDimensionSizeConverter,
       SliceConverter,
       DynamicSliceConverter,

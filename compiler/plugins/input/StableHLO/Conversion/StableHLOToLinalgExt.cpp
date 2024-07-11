@@ -421,33 +421,6 @@ struct FftOpConversion final : OpConversionPattern<mlir::stablehlo::FftOp> {
 };
 
 //===----------------------------------------------------------------------===//
-// ReverseOp
-//===----------------------------------------------------------------------===//
-
-struct ReverseOpConversion final
-    : OpConversionPattern<mlir::stablehlo::ReverseOp> {
-  using OpConversionPattern::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(mlir::stablehlo::ReverseOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    auto ty = dyn_cast<RankedTensorType>(adaptor.getOperands()[0].getType());
-    if (!ty)
-      return failure();
-
-    Location loc = op.getLoc();
-    SmallVector<OpFoldResult> mixedSizes =
-        tensor::getMixedSizes(rewriter, loc, adaptor.getOperands()[0]);
-    Value emptyTensor =
-        rewriter.create<tensor::EmptyOp>(loc, mixedSizes, ty.getElementType());
-    rewriter.replaceOpWithNewOp<IREE::LinalgExt::ReverseOp>(
-        op, typeConverter->convertType(op.getType()), adaptor.getOperands(),
-        emptyTensor, rewriter.getI64TensorAttr(op.getDimensions()));
-    return success();
-  }
-};
-
-//===----------------------------------------------------------------------===//
 // ScanOp
 //===----------------------------------------------------------------------===//
 
@@ -737,8 +710,7 @@ struct ConvertStableHloToLinalgExt final
     // generic LinAlg lowering, the generic lowering is not always performant
     // and even though only used in fallback here, may hide performance
     // issues and we'd rather know when the optimized lowering fails.
-    target.addIllegalOp<mlir::stablehlo::SortOp, mlir::stablehlo::FftOp,
-                        mlir::stablehlo::ReverseOp>();
+
     // FFT conversion creates complex ops which will be converted by the normal
     // StableHlo lowering, but these should still be converted if present inside
     // other linalg_ext op regions.
@@ -762,7 +734,7 @@ void populateStableHloToLinalgExtConversionPatterns(
     MLIRContext *context, TypeConverter &typeConverter,
     RewritePatternSet *patterns) {
   patterns->add<ScanOpConversion, SortOpConversion, ScatterOpConversion,
-                FftOpConversion, ReverseOpConversion, TopkOpConversion>(
+                FftOpConversion, TopkOpConversion>(
       typeConverter, context);
 
   // FIXME: It shouldn't be necessary to list every matching StableHlo op

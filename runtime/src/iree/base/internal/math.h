@@ -593,12 +593,11 @@ static inline uint8_t iree_math_f32_to_f8e8m0fnu(float value) {
   if (!isfinite(value)) {
     return 0xFF;
   }
-  if (value <= 0.f) {
-    return 0;
-  }
+  // drop sign
+  float abs = fabs(value);
   int exp = 0;
   // Normalized is in the interval [0.5, 1.0).
-  float normalized = frexpf(value, &exp);
+  float normalized = frexpf(abs, &exp);
   // If the normalized value is closer to 0.5 than to 1.0, decrement the
   // exponent.
   int rounded = exp - (normalized < 0.75f);
